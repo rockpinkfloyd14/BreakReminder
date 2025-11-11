@@ -320,6 +320,13 @@ class App:
         self.reminders: Dict[str, Reminder] = {}
         self.muted: bool = False
         self.follow_focus_assist: bool = False
+        # Auto-quit for profiling/live timing (ms)
+        try:
+            self._auto_quit_ms = int(os.environ.get("BR_AUTO_QUIT_MS", "0"))
+        except Exception:
+            self._auto_quit_ms = 0
+        # Show minimize-to-tray notice only once per run
+        self._minimize_notice_shown = False
 
         # Main window (taskbar-visible)
         self.root = tk.Tk()
@@ -477,6 +484,12 @@ class App:
         # Close button behaves like minimize to tray (not quitting)
         try:
             self.root.iconify()
+            if not self._minimize_notice_shown:
+                self._minimize_notice_shown = True
+                messagebox.showinfo(
+                    "Break Reminder",
+                    "Minimized to the system tray. Double-click the tray icon or choose 'Show Window' to reopen.",
+                )
         except Exception:
             pass
 
@@ -539,7 +552,10 @@ class App:
         try:
             # Lazy import winotify to reduce startup time
             from winotify import Notification, audio
-            toast = Notification(app_id=self.app_id, title=title, msg=msg, duration="short")
+            # Always use consistent title and include icon in toast
+            title = "Break Reminder"
+            icon_path = os.path.join(self.assets_dir, 'logo.png') if hasattr(self, 'assets_dir') else None
+            toast = Notification(app_id=self.app_id, title=title, msg=msg, duration="short", icon=icon_path)
             toast.set_audio(audio.Default, loop=False)
             toast.show()
         except Exception:
@@ -610,7 +626,6 @@ class App:
             Item(lambda item: f"Mute notifications: {'On' if self.muted else 'Off'}", self.toggle_mute),
             Item(lambda item: f"Follow Windows Focus Assist: {'On' if self.follow_focus_assist else 'Off'}", self.toggle_follow_focus_assist),
             Item("Quit", self.quit),
-            Item("Quit (force)", self.quit_force),
         )
 
     def refresh_menu(self) -> None:
@@ -692,11 +707,16 @@ class App:
             r.terminate()
         self.reminders.clear()
         try:
-            self.icon.visible = False
+            if self.icon:
+                self.icon.visible = False
         except Exception:
             pass
         # Call stop on a background thread to avoid deadlocks from menu callbacks
-        threading.Thread(target=self.icon.stop, daemon=True).start()
+        try:
+            if self.icon:
+                threading.Thread(target=self.icon.stop, daemon=True).start()
+        except Exception:
+            pass
         try:
             self.root.quit()
             self.root.destroy()
@@ -770,6 +790,17 @@ class App:
                 # Start tray shortly after window
                 self.root.after(50, self._start_tray)
             self.root.after(350, _finish)
+            # Optional auto-quit for profiling
+            if self._auto_quit_ms > 0:
+                def _auto_q():
+                    try:
+                        self.quit(None, None)
+                    except Exception:
+                        try:
+                            self.root.quit()
+                        except Exception:
+                            pass
+                self.root.after(self._auto_quit_ms, _auto_q)
             # keep a reference to prevent GC of image
             self._splash_img = img
         except Exception:
@@ -777,6 +808,8 @@ class App:
             self.show_window()
             _profile("Main window shown (no splash)")
             self.root.after(50, self._start_tray)
+            if self._auto_quit_ms > 0:
+                self.root.after(self._auto_quit_ms, lambda: self.quit(None, None))
 
     def run(self) -> None:
         # Show a very fast splash, then the main window, then tray
