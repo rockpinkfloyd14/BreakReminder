@@ -10,6 +10,23 @@ from typing import Any
 # winotify imported inside show_toast
 # pystray imported when starting tray icon
 
+# Simple, low-overhead startup profiling (opt-in via env BR_PROFILE_STARTUP=1)
+import os
+PROF = os.environ.get("BR_PROFILE_STARTUP") == "1"
+START_TS = time.perf_counter()
+PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "startup_profile.log")
+
+
+def _profile(note: str) -> None:
+    if not PROF:
+        return
+    try:
+        dt = (time.perf_counter() - START_TS) * 1000.0
+        with open(PROFILE_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{dt:8.1f} ms | {note}\n")
+    except Exception:
+        pass
+
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 from tkinter import ttk
@@ -306,6 +323,7 @@ class App:
 
         # Main window (taskbar-visible)
         self.root = tk.Tk()
+        _profile("Tk() created")
         self.root.title("Break Reminder")
         self.root.geometry("900x560")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -321,12 +339,14 @@ class App:
 
         # App assets and icon
         self.assets_dir = ensure_assets()
+        _profile("Assets ensured")
         try:
             from tkinter import PhotoImage
             self.window_icon = PhotoImage(file=os.path.join(self.assets_dir, 'logo.png'))
             self.root.iconphoto(True, self.window_icon)
         except Exception:
             self.window_icon = None
+        _profile("Window icon set")
 
         # pystray module will be loaded lazily when starting the tray
         self._pystray: Any = None
@@ -338,12 +358,15 @@ class App:
         # Build UI content
         self._tree_items: Dict[str, str] = {}
         self.build_ui()
+        _profile("UI built")
 
         # System tray icon is created later in run() to improve perceived load time
         self.icon: Optional[pystray.Icon] = None
 
     # --------------- UI (window) ---------------
     def build_ui(self) -> None:
+        # Optional splash (very fast) shown before main window becomes interactive
+        # It’s created and destroyed in run(), not here.
         # Header banner
         header = ttk.Frame(self.root)
         header.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -710,12 +733,55 @@ class App:
                 threading.Thread(target=self.icon.run, daemon=True).start()
         except Exception:
             self.icon = None
+        _profile("Tray started")
+
+    def _show_splash_then_window(self) -> None:
+        # Create a small splash Toplevel, center it, destroy after short delay, then show main window
+        try:
+            from tkinter import Toplevel, Label, PhotoImage
+            splash = Toplevel(self.root)
+            splash.overrideredirect(True)
+            # Simple splash content
+            try:
+                img = PhotoImage(file=os.path.join(self.assets_dir, 'logo.png'))
+            except Exception:
+                img = None
+            frame = ttk.Frame(splash, padding=12)
+            frame.pack()
+            if img is not None:
+                Label(frame, image=img).pack()
+            Label(frame, text="Break Reminder", font=("Segoe UI", 14, "bold")).pack(pady=(6, 0))
+            # center on screen
+            self.root.update_idletasks()
+            w, h = 220, 220
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            x = (sw - w)//2
+            y = (sh - h)//2
+            splash.geometry(f"{w}x{h}+{x}+{y}")
+            # schedule close and show main window
+            def _finish():
+                try:
+                    splash.destroy()
+                except Exception:
+                    pass
+                self.show_window()
+                _profile("Main window shown")
+                # Start tray shortly after window
+                self.root.after(50, self._start_tray)
+            self.root.after(350, _finish)
+            # keep a reference to prevent GC of image
+            self._splash_img = img
+        except Exception:
+            # Fallback: just show window
+            self.show_window()
+            _profile("Main window shown (no splash)")
+            self.root.after(50, self._start_tray)
 
     def run(self) -> None:
-        # Start UI first; schedule tray init right after
-        self.show_window()
-        # Let Tk render, then init tray to avoid blocking
-        self.root.after(50, self._start_tray)
+        # Show a very fast splash, then the main window, then tray
+        self.root.withdraw()
+        self._show_splash_then_window()
         self.root.mainloop()
 
 
