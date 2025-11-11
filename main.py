@@ -6,7 +6,7 @@ from typing import Dict, Optional, Callable, List
 
 import pystray
 from pystray import MenuItem as Item, Menu
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from winotify import Notification, audio
 
 import tkinter as tk
@@ -61,20 +61,77 @@ def another_instance_running() -> bool:
 
 # ----------------------------- Utilities -----------------------------
 
+def ensure_assets() -> str:
+    """Create basic assets (logo.png, logo.ico, header.png) if missing. Returns assets dir."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    os.makedirs(base, exist_ok=True)
+
+    logo_png = os.path.join(base, "logo.png")
+    logo_ico = os.path.join(base, "logo.ico")
+    header_png = os.path.join(base, "header.png")
+
+    if not os.path.exists(logo_png):
+        img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # rounded rectangle background
+        bg = (66, 133, 244, 255)
+        d.rounded_rectangle([16, 16, 240, 240], radius=48, fill=bg)
+        # text "BR"
+        try:
+            font = ImageFont.truetype("seguiemj.ttf", 120)
+        except Exception:
+            font = ImageFont.load_default()
+        tw, th = d.textsize("BR", font=font)
+        d.text(((256 - tw)//2, (256 - th)//2 - 10), "BR", fill=(255, 255, 255, 255), font=font)
+        img.save(logo_png)
+        # Save ICO at multiple sizes
+        img.save(logo_ico, sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
+
+    if not os.path.exists(header_png):
+        w, h = 1000, 120
+        hdr = Image.new("RGBA", (w, h), (245, 247, 250, 255))
+        d = ImageDraw.Draw(hdr)
+        # subtle bottom border
+        d.line([(0, h-1), (w, h-1)], fill=(200, 208, 218, 255), width=1)
+        # paste logo
+        try:
+            logo = Image.open(logo_png).convert("RGBA").resize((72, 72), Image.LANCZOS)
+            hdr.paste(logo, (24, (h-72)//2), logo)
+        except Exception:
+            pass
+        # title text
+        try:
+            font = ImageFont.truetype("segoeui.ttf", 28)
+        except Exception:
+            font = ImageFont.load_default()
+        d.text((112, (h-28)//2 - 6), "Break Reminder", fill=(30, 30, 30, 255), font=font)
+        d.text((112, (h-28)//2 + 22), "Stay healthy with periodic break reminders", fill=(90, 90, 90, 255))
+        hdr.save(header_png)
+
+    return base
+
+
 def create_tray_image(width: int = 64, height: int = 64) -> Image.Image:
-    # Simple circle icon
-    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    r = min(width, height) // 2 - 6
-    center = (width // 2, height // 2)
-    d.ellipse(
-        [center[0]-r, center[1]-r, center[0]+r, center[1]+r],
-        fill=(66, 133, 244, 255),
-        outline=(25, 103, 210, 255),
-        width=3,
-    )
-    d.text((width//2 - 10, height//2 - 9), "BR", fill=(255, 255, 255, 255))
-    return img
+    # Prefer bundled logo
+    try:
+        assets = ensure_assets()
+        p = os.path.join(assets, "logo.png")
+        img = Image.open(p).convert("RGBA").resize((width, height), Image.LANCZOS)
+        return img
+    except Exception:
+        # Fallback simple circle icon
+        img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        r = min(width, height) // 2 - 6
+        center = (width // 2, height // 2)
+        d.ellipse(
+            [center[0]-r, center[1]-r, center[0]+r, center[1]+r],
+            fill=(66, 133, 244, 255),
+            outline=(25, 103, 210, 255),
+            width=3,
+        )
+        d.text((width//2 - 10, height//2 - 9), "BR", fill=(255, 255, 255, 255))
+        return img
 
 
 def ask_user_input(prompt: str, initial: str = "") -> Optional[str]:
@@ -218,9 +275,26 @@ class App:
         # Main window (taskbar-visible)
         self.root = tk.Tk()
         self.root.title("Break Reminder")
-        self.root.geometry("700x360")
+        self.root.geometry("900x560")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind("<Unmap>", self.on_unmap)
+
+        # Style/theme for a more native Windows look
+        try:
+            style = ttk.Style(self.root)
+            if 'vista' in style.theme_names():
+                style.theme_use('vista')
+        except Exception:
+            pass
+
+        # App assets and icon
+        self.assets_dir = ensure_assets()
+        try:
+            from tkinter import PhotoImage
+            self.window_icon = PhotoImage(file=os.path.join(self.assets_dir, 'logo.png'))
+            self.root.iconphoto(True, self.window_icon)
+        except Exception:
+            self.window_icon = None
 
         # UI variables
         self.muted_var = tk.BooleanVar(value=self.muted)
@@ -240,6 +314,16 @@ class App:
 
     # --------------- UI (window) ---------------
     def build_ui(self) -> None:
+        # Header banner
+        header = ttk.Frame(self.root)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        try:
+            from tkinter import PhotoImage
+            self.header_img = PhotoImage(file=os.path.join(self.assets_dir, 'header.png'))
+            ttk.Label(header, image=self.header_img).pack(fill="x")
+        except Exception:
+            ttk.Label(header, text="Break Reminder", font=("Segoe UI", 16, "bold")).pack(side="left", padx=12, pady=8)
+
         # Tree (reminders list)
         columns = ("message", "interval", "status")
         self.tree = ttk.Treeview(self.root, columns=columns, show="headings", selectmode="browse")
@@ -252,12 +336,12 @@ class App:
 
         yscroll = ttk.Scrollbar(self.root, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
-        yscroll.grid(row=0, column=1, sticky="ns", pady=8, padx=(0, 8))
+        self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        yscroll.grid(row=1, column=1, sticky="ns", pady=8, padx=(0, 8))
 
         # Buttons / toggles
         btn_frame = ttk.Frame(self.root)
-        btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        btn_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
         btn_frame.columnconfigure(0, weight=1)
         btn_frame.columnconfigure(1, weight=1)
         btn_frame.columnconfigure(2, weight=1)
@@ -273,14 +357,25 @@ class App:
         ttk.Button(btn_frame, text="Terminate", command=self.ui_terminate).grid(row=0, column=5, padx=4)
 
         chk_frame = ttk.Frame(self.root)
-        chk_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        chk_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
         ttk.Checkbutton(chk_frame, text="Mute notifications (DND)", variable=self.muted_var, command=self.ui_toggle_mute).pack(side="left", padx=4)
         ttk.Checkbutton(chk_frame, text="Follow Windows Focus Assist", variable=self.follow_focus_var, command=self.ui_toggle_follow_focus).pack(side="left", padx=12)
         ttk.Button(chk_frame, text="Quit", command=lambda: self.quit(self.icon, None)).pack(side="right", padx=4)
 
         # Layout behavior
-        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
         self.root.columnconfigure(0, weight=1)
+
+        # Menu bar (Help)
+        try:
+            menubar = tk.Menu(self.root)
+            helpmenu = tk.Menu(menubar, tearoff=0)
+            helpmenu.add_command(label="Help…", command=self.show_help)
+            helpmenu.add_command(label="About…", command=self.show_about)
+            menubar.add_cascade(label="Help", menu=helpmenu)
+            self.root.config(menu=menubar)
+        except Exception:
+            pass
 
         # Initial fill
         self.refresh_tree()
@@ -310,8 +405,8 @@ class App:
     def show_window(self, icon: Optional[pystray.Icon] = None, item: Optional[Item] = None) -> None:
         try:
             self.root.deiconify()
-            # Maximize on show, per user request
-            self.root.state('zoomed')
+            # Open in normal (medium) size
+            self.root.state('normal')
             self.root.lift()
             self.root.focus_force()
         except Exception:
@@ -469,6 +564,27 @@ class App:
             pass
 
     # --------------- Menu actions ---------------
+    def show_help(self) -> None:
+        msg = (
+            "Break Reminder helps you take periodic breaks.\n\n"
+            "- Add reminders with custom messages and intervals.\n"
+            "- Snooze a reminder for 5 minutes from the window or tray.\n"
+            "- Mute notifications or follow Windows Focus Assist.\n"
+            "- Tray menu lets you trigger, pause/resume, edit, or terminate reminders.\n\n"
+            "Author: Arjun Sharma\n"
+            "Email: arjunsharma9112@gmail.com"
+        )
+        messagebox.showinfo("Break Reminder - Help", msg)
+
+    def show_about(self) -> None:
+        msg = (
+            "Break Reminder v1.x\n\n"
+            "Author: Arjun Sharma\n"
+            "Email: arjunsharma9112@gmail.com\n"
+            "License: MIT (proposed)"
+        )
+        messagebox.showinfo("About Break Reminder", msg)
+
     def menu_add_reminder(self, icon: pystray.Icon, item: Item) -> None:
         message = ask_user_input("Reminder message:", initial="Don't forget to take a break")
         if not message:
