@@ -97,26 +97,38 @@ def ensure_assets() -> str:
         # Save ICO at multiple sizes (Windows prefers embedded sizes)
         img.save(logo_ico, sizes=[(16,16), (20,20), (24,24), (32,32), (48,48), (64,64), (128,128), (256,256)])
 
-    if not os.path.exists(header_png):
-        w, h = 1000, 120
-        hdr = Image.new("RGBA", (w, h), (245, 247, 250, 255))
-        d = ImageDraw.Draw(hdr)
-        # subtle bottom border
-        d.line([(0, h-1), (w, h-1)], fill=(200, 208, 218, 255), width=1)
-        # paste logo
-        try:
-            logo = Image.open(logo_png).convert("RGBA").resize((72, 72), Image.LANCZOS)
-            hdr.paste(logo, (24, (h-72)//2), logo)
-        except Exception:
-            pass
-        # title text
-        try:
-            font = ImageFont.truetype("segoeui.ttf", 28)
-        except Exception:
-            font = ImageFont.load_default()
-        d.text((112, (h-28)//2 - 6), "Break Reminder", fill=(30, 30, 30, 255), font=font)
-        d.text((112, (h-28)//2 + 22), "Stay healthy with periodic break reminders", fill=(90, 90, 90, 255))
-        hdr.save(header_png)
+    # Always (re)generate header so spacing/design changes apply
+    w, h = 1000, 120
+    hdr = Image.new("RGBA", (w, h), (245, 247, 250, 255))
+    d = ImageDraw.Draw(hdr)
+    # subtle bottom border
+    d.line([(0, h-1), (w, h-1)], fill=(200, 208, 218, 255), width=1)
+    # paste logo
+    try:
+        logo = Image.open(logo_png).convert("RGBA").resize((72, 72), Image.LANCZOS)
+        hdr.paste(logo, (24, (h-72)//2), logo)
+    except Exception:
+        pass
+    # title + subtitle with explicit spacing
+    try:
+        title_font = ImageFont.truetype("segoeui.ttf", 32)
+    except Exception:
+        title_font = ImageFont.load_default()
+    try:
+        subtitle_font = ImageFont.truetype("segoeui.ttf", 16)
+    except Exception:
+        subtitle_font = ImageFont.load_default()
+    title = "Break Reminder"
+    subtitle = "Stay healthy with periodic break reminders"
+    tb = d.textbbox((0, 0), title, font=title_font)
+    sb = d.textbbox((0, 0), subtitle, font=subtitle_font)
+    th = tb[3] - tb[1]
+    sh = sb[3] - sb[1]
+    gap = 10  # extra space between lines
+    y0 = (h - (th + gap + sh)) // 2
+    d.text((112, y0), title, fill=(30, 30, 30, 255), font=title_font)
+    d.text((112, y0 + th + gap), subtitle, fill=(90, 90, 90, 255), font=subtitle_font)
+    hdr.save(header_png)
 
     return base
 
