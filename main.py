@@ -54,20 +54,25 @@ SINGLETON_MUTEX_HANDLE = None
 
 
 def another_instance_running() -> bool:
-    """Returns True if another instance is already running (Windows only)."""
+    """Returns True if another instance is already running (Windows only).
+    Uses Win32 named mutex via ctypes, so it works without pywin32.
+    """
     global SINGLETON_MUTEX_HANDLE
-    if win32event is None or win32api is None or winerror is None:
-        return False
     try:
-        # Use a Global mutex so it works across sessions
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        # Global mutex so it works across user sessions
         name = "Global\\BreakReminderSingleton"
-        handle = win32event.CreateMutex(None, True, name)
-        # If already exists, GetLastError will be ERROR_ALREADY_EXISTS
-        already = (win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS)
-        if already:
-            # Release our handle immediately
+        # bInitialOwner=True to detect existing instance via GetLastError
+        handle = kernel32.CreateMutexW(None, True, name)
+        if not handle:
+            # Failed to create mutex; assume not running to avoid blocking use
+            return False
+        last_err = kernel32.GetLastError()
+        if last_err == ERROR_ALREADY_EXISTS:
             try:
-                win32api.CloseHandle(handle)
+                kernel32.CloseHandle(handle)
             except Exception:
                 pass
             return True
