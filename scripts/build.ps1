@@ -7,6 +7,12 @@
 python scripts/generate_assets.py
 
 # Clean previous artifacts
+try {
+  if (Get-Process BreakReminder -ErrorAction SilentlyContinue) {
+    Get-Process BreakReminder | Stop-Process -Force
+    Start-Sleep -Seconds 1
+  }
+} catch {}
 if (Test-Path build) { Remove-Item -Recurse -Force build }
 if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 if (Test-Path BreakReminder.spec) { Remove-Item -Force BreakReminder.spec }
