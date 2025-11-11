@@ -77,15 +77,25 @@ def ensure_assets() -> str:
         bg = (66, 133, 244, 255)
         d.rounded_rectangle([16, 16, 240, 240], radius=48, fill=bg)
         # text "BR"
+        # Prefer bold Segoe UI for crisper small sizes
         try:
-            font = ImageFont.truetype("seguiemj.ttf", 120)
+            font = ImageFont.truetype("segoeuib.ttf", 120)
         except Exception:
-            font = ImageFont.load_default()
-        tw, th = d.textsize("BR", font=font)
-        d.text(((256 - tw)//2, (256 - th)//2 - 10), "BR", fill=(255, 255, 255, 255), font=font)
+            try:
+                font = ImageFont.truetype("segoeui.ttf", 120)
+            except Exception:
+                font = ImageFont.load_default()
+        bbox = d.textbbox((0, 0), "BR", font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (256 - tw)//2
+        y = (256 - th)//2 - 10
+        # Outline for clarity at small sizes
+        for ox, oy in ((-2,0),(2,0),(0,-2),(0,2),(-1,-1),(1,-1),(-1,1),(1,1)):
+            d.text((x+ox, y+oy), "BR", fill=(20, 60, 120, 200), font=font)
+        d.text((x, y), "BR", fill=(255, 255, 255, 255), font=font)
         img.save(logo_png)
-        # Save ICO at multiple sizes
-        img.save(logo_ico, sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
+        # Save ICO at multiple sizes (Windows prefers embedded sizes)
+        img.save(logo_ico, sizes=[(16,16), (20,20), (24,24), (32,32), (48,48), (64,64), (128,128), (256,256)])
 
     if not os.path.exists(header_png):
         w, h = 1000, 120
@@ -304,13 +314,8 @@ class App:
         self._tree_items: Dict[str, str] = {}
         self.build_ui()
 
-        # System tray icon (runs detached; we control via menu)
-        self.icon = pystray.Icon(
-            name="BreakReminder",
-            title="Break Reminder",
-            icon=create_tray_image(),
-            menu=self.build_menu(),
-        )
+        # System tray icon is created later in run() to improve perceived load time
+        self.icon: Optional[pystray.Icon] = None
 
     # --------------- UI (window) ---------------
     def build_ui(self) -> None:
@@ -557,6 +562,8 @@ class App:
         )
 
     def refresh_menu(self) -> None:
+        if not self.icon:
+            return
         self.icon.menu = self.build_menu()
         try:
             self.icon.update_menu()
@@ -658,12 +665,22 @@ class App:
 
     # --------------- Entry point ---------------
     def run(self) -> None:
-        # Start tray icon in the background and show main window on taskbar
+        # Create tray icon just-in-time to reduce initial load cost
         try:
-            self.icon.run_detached()
+            self.icon = pystray.Icon(
+                name="BreakReminder",
+                title="Break Reminder",
+                icon=create_tray_image(),
+                menu=self.build_menu(),
+            )
         except Exception:
-            # Fallback to blocking run if detached not available
-            threading.Thread(target=self.icon.run, daemon=True).start()
+            self.icon = None
+        # Start tray icon in the background and show main window on taskbar
+        if self.icon:
+            try:
+                self.icon.run_detached()
+            except Exception:
+                threading.Thread(target=self.icon.run, daemon=True).start()
         self.show_window()
         self.root.mainloop()
 
