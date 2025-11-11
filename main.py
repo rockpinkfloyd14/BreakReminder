@@ -4,10 +4,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Callable, List
 
-import pystray
-from pystray import MenuItem as Item, Menu
-from PIL import Image, ImageDraw, ImageFont
-from winotify import Notification, audio
+# Lazy-load heavy modules (pystray, Pillow, winotify) where needed to improve startup time
+from typing import Any
+# PIL imports moved into ensure_assets/create_tray_image
+# winotify imported inside show_toast
+# pystray imported when starting tray icon
 
 import tkinter as tk
 from tkinter import simpledialog, messagebox
@@ -61,8 +62,13 @@ def another_instance_running() -> bool:
 
 # ----------------------------- Utilities -----------------------------
 
-def ensure_assets() -> str:
-    """Create basic assets (logo.png, logo.ico, header.png) if missing. Returns assets dir."""
+def ensure_assets(force: bool = False) -> str:
+    """Create basic assets (logo.png, logo.ico, header.png) if missing.
+    Returns assets dir. Pass force=True to regenerate header/logo.
+    """
+    # Lazy import Pillow to reduce startup time until needed
+    from PIL import Image, ImageDraw, ImageFont
+
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
     os.makedirs(base, exist_ok=True)
 
@@ -70,7 +76,7 @@ def ensure_assets() -> str:
     logo_ico = os.path.join(base, "logo.ico")
     header_png = os.path.join(base, "header.png")
 
-    if not os.path.exists(logo_png):
+    if force or not os.path.exists(logo_png):
         img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         # rounded rectangle background
@@ -97,43 +103,47 @@ def ensure_assets() -> str:
         # Save ICO at multiple sizes (Windows prefers embedded sizes)
         img.save(logo_ico, sizes=[(16,16), (20,20), (24,24), (32,32), (48,48), (64,64), (128,128), (256,256)])
 
-    # Always (re)generate header so spacing/design changes apply
-    w, h = 1000, 120
-    hdr = Image.new("RGBA", (w, h), (245, 247, 250, 255))
-    d = ImageDraw.Draw(hdr)
-    # subtle bottom border
-    d.line([(0, h-1), (w, h-1)], fill=(200, 208, 218, 255), width=1)
-    # paste logo
-    try:
-        logo = Image.open(logo_png).convert("RGBA").resize((72, 72), Image.LANCZOS)
-        hdr.paste(logo, (24, (h-72)//2), logo)
-    except Exception:
-        pass
-    # title + subtitle with explicit spacing
-    try:
-        title_font = ImageFont.truetype("segoeui.ttf", 32)
-    except Exception:
-        title_font = ImageFont.load_default()
-    try:
-        subtitle_font = ImageFont.truetype("segoeui.ttf", 16)
-    except Exception:
-        subtitle_font = ImageFont.load_default()
-    title = "Break Reminder"
-    subtitle = "Stay healthy with periodic break reminders"
-    tb = d.textbbox((0, 0), title, font=title_font)
-    sb = d.textbbox((0, 0), subtitle, font=subtitle_font)
-    th = tb[3] - tb[1]
-    sh = sb[3] - sb[1]
-    gap = 10  # extra space between lines
-    y0 = (h - (th + gap + sh)) // 2
-    d.text((112, y0), title, fill=(30, 30, 30, 255), font=title_font)
-    d.text((112, y0 + th + gap), subtitle, fill=(90, 90, 90, 255), font=subtitle_font)
-    hdr.save(header_png)
+    if force or not os.path.exists(header_png):
+        w, h = 1000, 120
+        hdr = Image.new("RGBA", (w, h), (245, 247, 250, 255))
+        d = ImageDraw.Draw(hdr)
+        # subtle bottom border
+        d.line([(0, h-1), (w, h-1)], fill=(200, 208, 218, 255), width=1)
+        # paste logo
+        try:
+            logo = Image.open(logo_png).convert("RGBA").resize((72, 72), Image.LANCZOS)
+            hdr.paste(logo, (24, (h-72)//2), logo)
+        except Exception:
+            pass
+        # title + subtitle with explicit spacing
+        try:
+            title_font = ImageFont.truetype("segoeui.ttf", 32)
+        except Exception:
+            title_font = ImageFont.load_default()
+        try:
+            subtitle_font = ImageFont.truetype("segoeui.ttf", 16)
+        except Exception:
+            subtitle_font = ImageFont.load_default()
+        title = "Break Reminder"
+        subtitle = "Stay healthy with periodic break reminders"
+        tb = d.textbbox((0, 0), title, font=title_font)
+        sb = d.textbbox((0, 0), subtitle, font=subtitle_font)
+        th = tb[3] - tb[1]
+        sh = sb[3] - sb[1]
+        gap = 10  # extra space between lines
+        y0 = (h - (th + gap + sh)) // 2
+        d.text((112, y0), title, fill=(30, 30, 30, 255), font=title_font)
+        d.text((112, y0 + th + gap), subtitle, fill=(90, 90, 90, 255), font=subtitle_font)
+        hdr.save(header_png)
+
+    return base
 
     return base
 
 
-def create_tray_image(width: int = 64, height: int = 64) -> Image.Image:
+def create_tray_image(width: int = 64, height: int = 64):
+    # Lazy import Pillow to reduce startup cost
+    from PIL import Image, ImageDraw
     # Prefer bundled logo
     try:
         assets = ensure_assets()
@@ -318,6 +328,9 @@ class App:
         except Exception:
             self.window_icon = None
 
+        # pystray module will be loaded lazily when starting the tray
+        self._pystray: Any = None
+
         # UI variables
         self.muted_var = tk.BooleanVar(value=self.muted)
         self.follow_focus_var = tk.BooleanVar(value=self.follow_focus_assist)
@@ -419,7 +432,7 @@ class App:
             return None
         return sel[0]
 
-    def show_window(self, icon: Optional[pystray.Icon] = None, item: Optional[Item] = None) -> None:
+    def show_window(self, icon=None, item=None) -> None:
         try:
             self.root.deiconify()
             # Open in normal (medium) size
@@ -501,6 +514,8 @@ class App:
         if self.follow_focus_assist and is_windows_toasts_disabled():
             return
         try:
+            # Lazy import winotify to reduce startup time
+            from winotify import Notification, audio
             toast = Notification(app_id=self.app_id, title=title, msg=msg, duration="short")
             toast.set_audio(audio.Default, loop=False)
             toast.show()
@@ -546,9 +561,11 @@ class App:
             self.refresh_tree()
 
     # --------------- Menu building ---------------
-    def build_menu(self) -> Menu:
-        def active_reminders_menu() -> List[Item]:
-            items: List[Item] = []
+    def build_menu(self):
+        Item = self._pystray.MenuItem
+        Menu = self._pystray.Menu
+        def active_reminders_menu():
+            items = []
             if not self.reminders:
                 items.append(Item("(none)", lambda: None, enabled=False))
                 return items
@@ -604,7 +621,7 @@ class App:
         )
         messagebox.showinfo("About Break Reminder", msg)
 
-    def menu_add_reminder(self, icon: pystray.Icon, item: Item) -> None:
+    def menu_add_reminder(self, icon=None, item=None) -> None:
         message = ask_user_input("Reminder message:", initial="Don't forget to take a break")
         if not message:
             return
@@ -613,12 +630,12 @@ class App:
             return
         self.add_reminder(message, int(interval))
 
-    def toggle_mute(self, icon: pystray.Icon, item: Item) -> None:
+    def toggle_mute(self, icon=None, item=None) -> None:
         self.muted = not self.muted
         self.refresh_menu()
         self.refresh_tree()
 
-    def toggle_follow_focus_assist(self, icon: pystray.Icon, item: Item) -> None:
+    def toggle_follow_focus_assist(self, icon=None, item=None) -> None:
         self.follow_focus_assist = not self.follow_focus_assist
         self.refresh_menu()
         self.refresh_tree()
@@ -646,7 +663,7 @@ class App:
         r.snooze(minutes)
         self.refresh_tree()
 
-    def quit(self, icon: pystray.Icon, item: Item) -> None:
+    def quit(self, icon=None, item=None) -> None:
         # Graceful quit without confirmation to avoid UI blocking issues
         for r in list(self.reminders.values()):
             r.terminate()
@@ -663,7 +680,7 @@ class App:
         except Exception:
             pass
 
-    def quit_force(self, icon: pystray.Icon, item: Item) -> None:
+    def quit_force(self, icon=None, item=None) -> None:
         # Force-quit as a last resort
         for r in list(self.reminders.values()):
             r.terminate()
@@ -676,24 +693,29 @@ class App:
         os._exit(0)
 
     # --------------- Entry point ---------------
-    def run(self) -> None:
-        # Create tray icon just-in-time to reduce initial load cost
+    def _start_tray(self) -> None:
         try:
-            self.icon = pystray.Icon(
+            if self._pystray is None:
+                import pystray  # lazy import to speed up initial UI display
+                self._pystray = pystray
+            self.icon = self._pystray.Icon(
                 name="BreakReminder",
                 title="Break Reminder",
                 icon=create_tray_image(),
                 menu=self.build_menu(),
             )
-        except Exception:
-            self.icon = None
-        # Start tray icon in the background and show main window on taskbar
-        if self.icon:
             try:
                 self.icon.run_detached()
             except Exception:
                 threading.Thread(target=self.icon.run, daemon=True).start()
+        except Exception:
+            self.icon = None
+
+    def run(self) -> None:
+        # Start UI first; schedule tray init right after
         self.show_window()
+        # Let Tk render, then init tray to avoid blocking
+        self.root.after(50, self._start_tray)
         self.root.mainloop()
 
 
